@@ -63,9 +63,9 @@ sudo tee /etc/systemd/system/cloudflared-tunnel.service > /dev/null <<'EOF'
 [Unit]
 Description=Cloudflare Tunnel — Energy Monitor Backend
 Documentation=https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
-After=network-online.target energy-backend.service
+After=network-online.target energy-monitor.service
 Wants=network-online.target
-Requires=energy-backend.service
+Requires=energy-monitor.service
 
 [Service]
 Type=simple
