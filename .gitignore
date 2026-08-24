@@ -1,0 +1,28 @@
+# Environment and credentials
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+Backend/config/google-service-account.json
+
+# Runtime data and local dependencies
+Backend/data/
+Backend/node_modules/
+energy-dashboard/node_modules/
+energy-dashboard/.next/
+energy-dashboard/.vercel/
+Frontend/node_modules/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs and local OS/editor files
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Downloaded reference manuals (keep outside the source repository)
+/*.pdf
