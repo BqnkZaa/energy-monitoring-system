@@ -148,6 +148,8 @@ db.exec(`
     ft_rate        REAL    NOT NULL,
     service_charge REAL    NOT NULL,
     vat_rate       REAL    NOT NULL,
+    site_latitude  REAL,
+    site_longitude REAL,
     updated_at     TEXT    NOT NULL
   );
 `);
@@ -181,6 +183,8 @@ ensureColumn('monthly_cost', 'max_demand_kw', 'REAL DEFAULT 0');
 ensureColumn('monthly_cost', 'demand_rate', 'REAL DEFAULT 132.93');
 ensureColumn('monthly_cost', 'demand_cost', 'REAL DEFAULT 0');
 ensureColumn('monthly_cost', 'dashboard_cost', 'REAL DEFAULT 0');
+ensureColumn('billing_settings', 'site_latitude', 'REAL');
+ensureColumn('billing_settings', 'site_longitude', 'REAL');
 
 console.log(`[DB] ✅ SQLite เริ่มต้นสำเร็จ: ${path.resolve(config.database.path)}`);
 
