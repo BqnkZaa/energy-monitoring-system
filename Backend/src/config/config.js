@@ -30,6 +30,7 @@ const config = {
     keyPath:       process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH || './config/google-service-account.json',
     spreadsheetId: process.env.GOOGLE_SPREADSHEET_ID || '',
     sheetName:     process.env.GOOGLE_SHEET_NAME || 'EnergyData',
+    dailySheetName: process.env.GOOGLE_DAILY_SHEET_NAME || 'DailySummary',
     monthlySheetName: process.env.GOOGLE_MONTHLY_SHEET_NAME || 'MonthlyBilling',
     // Sync ทุกชั่วโมง (Cron Expression)
     syncCron: '0 * * * *',

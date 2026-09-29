@@ -80,10 +80,12 @@ const stmtUpsertDailySummary = db.prepare(`
   INSERT INTO daily_summary (date, peak_kwh, off_peak_kwh, total_kwh,
     peak_cost, off_peak_cost, total_cost,
     avg_voltage_l1, avg_voltage_l2, avg_voltage_l3,
-    max_power_w, reading_count)
+    max_power_w, max_demand_kw, demand_rate, demand_cost, dashboard_cost,
+    reading_count, last_updated)
   VALUES (@date, @peakKwh, @offPeakKwh, @totalKwh,
     @peakCost, @offPeakCost, @totalCost,
-    @avgV1, @avgV2, @avgV3, @maxW, 1)
+    @avgV1, @avgV2, @avgV3, @maxW, @maxDemandKw, @demandRate, @demandCost,
+    @dashboardCost, 1, @now)
   ON CONFLICT(date) DO UPDATE SET
     peak_kwh      = peak_kwh      + @peakKwh,
     off_peak_kwh  = off_peak_kwh  + @offPeakKwh,
@@ -96,7 +98,14 @@ const stmtUpsertDailySummary = db.prepare(`
     avg_voltage_l2 = (avg_voltage_l2 * reading_count + @avgV2) / (reading_count + 1),
     avg_voltage_l3 = (avg_voltage_l3 * reading_count + @avgV3) / (reading_count + 1),
     max_power_w   = MAX(max_power_w, @maxW),
-    reading_count = reading_count + 1
+    max_demand_kw = MAX(max_demand_kw, excluded.max_demand_kw),
+    demand_rate   = excluded.demand_rate,
+    demand_cost   = MAX(max_demand_kw, excluded.max_demand_kw) * excluded.demand_rate,
+    dashboard_cost = ((peak_cost + excluded.peak_cost)
+                    + (off_peak_cost + excluded.off_peak_cost))
+                    + (MAX(max_demand_kw, excluded.max_demand_kw) * excluded.demand_rate),
+    reading_count = reading_count + 1,
+    last_updated  = excluded.last_updated
 `);
 
 // ═══════════════════════════════════════════════════════════════
@@ -250,6 +259,11 @@ function processTouCost(currentTotalKwh, phases, totalW, now = new Date()) {
       avgV2,
       avgV3,
       maxW:        totalW || 0,
+      maxDemandKw: currentDemandKw,
+      demandRate:  billingSettings.demandRate,
+      demandCost,
+      dashboardCost,
+      now:         nowIso,
     });
 
     // 3. อัปเดต kWh Tracker (สำหรับ Delta รอบถัดไป)

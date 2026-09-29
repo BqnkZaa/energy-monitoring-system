@@ -227,6 +227,7 @@ sudo journalctl -u energy-monitor -f
 GOOGLE_SERVICE_ACCOUNT_KEY_PATH=./config/google-service-account.json
 GOOGLE_SPREADSHEET_ID=1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms
 GOOGLE_SHEET_NAME=EnergyData
+GOOGLE_DAILY_SHEET_NAME=DailySummary
 ```
 
 ---
@@ -292,6 +293,16 @@ VAT_RATE=0.07
 > ค่า Demand ในเวอร์ชันนี้คือค่าสูงสุดจากกำลังไฟที่อ่านได้ทุก 2 วินาที
 > หากต้องการให้เทียบเท่าบิลการไฟฟ้า อาจต้องกำหนดวิธีคิดเป็นค่าเฉลี่ยตามช่วง
 > Demand ของผู้ให้บริการไฟฟ้าอีกครั้ง
+
+### สรุปรายวัน
+
+ทุกชั่วโมง Backend จะสร้างหรืออัปเดตแท็บ `DailySummary` (เปลี่ยนชื่อได้ด้วย
+`GOOGLE_DAILY_SHEET_NAME`) ให้มีหนึ่งแถวต่อหนึ่งวัน ประกอบด้วย Peak/Off-Peak
+kWh, ค่า Energy, กำลังสูงสุด, Demand rate และยอด Dashboard ของวันนั้น
+
+คอลัมน์ `Demand Cost` และ `Dashboard Total` ในแท็บรายวันเป็น **ค่าอ้างอิงของวัน**
+สำหรับดูแนวโน้มเท่านั้น ห้ามนำไปบวกรวมข้ามวันเพื่อออกบิล เพราะค่า Demand ที่ถูกต้อง
+คิดจากกำลังสูงสุดของทั้งเดือนเพียงครั้งเดียวใน `MonthlyBilling`.
 
 ---
 

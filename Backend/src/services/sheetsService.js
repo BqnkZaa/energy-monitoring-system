@@ -25,6 +25,17 @@ const billingSettingsService = require('./billingSettingsService');
 // Sheets client (lazy-initialized)
 let sheetsClient = null;
 
+function getLocalDateString(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: process.env.TZ || 'Asia/Bangkok',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
 /**
  * เริ่มต้น Google Sheets Client
  * @returns {google.auth.GoogleAuth|null}
@@ -58,11 +69,13 @@ async function getAuthClient() {
 }
 
 /**
- * ตรวจสอบและสร้าง Header Row ถ้า Sheet ว่างอยู่
+ * ตรวจสอบและสร้าง Header Row สำหรับสรุปรายวันถ้า Sheet ว่างอยู่
  */
-async function ensureSheetHeader(sheets) {
+async function ensureDailySheetHeader(sheets) {
   const spreadsheetId = config.googleSheets.spreadsheetId;
-  const sheetName     = config.googleSheets.sheetName;
+  const sheetName     = config.googleSheets.dailySheetName;
+
+  await ensureSheetExists(sheets, sheetName);
 
   try {
     const res = await sheets.spreadsheets.values.get({
@@ -76,10 +89,11 @@ async function ensureSheetHeader(sheets) {
         [
           'Date',
           'Peak kWh', 'Off-Peak kWh', 'Total kWh',
-          'Peak Cost (฿)', 'Off-Peak Cost (฿)', 'Total Cost (฿)',
+          'Energy Cost (฿)', 'Max Demand (kW)', 'Demand Rate (฿/kW)',
+          'Demand Cost (฿, reference)', 'Dashboard Total (฿, reference)',
           'Avg V L1', 'Avg V L2', 'Avg V L3',
           'Max Power (W)', 'Readings',
-          'Synced At',
+          'Updated At',
         ],
       ];
       await sheets.spreadsheets.values.append({
@@ -88,14 +102,14 @@ async function ensureSheetHeader(sheets) {
         valueInputOption: 'USER_ENTERED',
         resource: { values: headers },
       });
-      console.log('[Sheets] ✅ สร้าง Header Row สำเร็จ');
+      console.log('[Sheets] ✅ สร้าง Header สรุปรายวันสำเร็จ');
     }
   } catch (err) {
-    console.error('[Sheets] ❌ ensureSheetHeader Error:', err.message);
+    console.error('[Sheets] ❌ ensureDailySheetHeader Error:', err.message);
   }
 }
 
-/** สร้าง Sheet รายเดือนหากยังไม่มีใน Spreadsheet */
+/** สร้าง Sheet หากยังไม่มีใน Spreadsheet */
 async function ensureSheetExists(sheets, sheetName) {
   const spreadsheetId = config.googleSheets.spreadsheetId;
   const metadata = await sheets.spreadsheets.get({
@@ -111,7 +125,7 @@ async function ensureSheetExists(sheets, sheetName) {
       spreadsheetId,
       resource: { requests: [{ addSheet: { properties: { title: sheetName } } }] },
     });
-    console.log(`[Sheets] ✅ สร้าง Sheet รายเดือน: ${sheetName}`);
+    console.log(`[Sheets] ✅ สร้าง Sheet: ${sheetName}`);
   }
 }
 
@@ -160,65 +174,90 @@ async function syncDailySummaryToSheets() {
 
   const sheets = google.sheets({ version: 'v4', auth: authClient });
   const spreadsheetId = config.googleSheets.spreadsheetId;
-  const sheetName     = config.googleSheets.sheetName;
+  const sheetName     = config.googleSheets.dailySheetName;
 
-  await ensureSheetHeader(sheets);
+  await ensureDailySheetHeader(sheets);
 
-  // ดึงรายการที่ยังไม่ Sync (synced_to_sheets = 0)
-  // เฟ้นเฉพาะวันก่อนหน้าเดียว (exclude today เพราะยังไม่สิ้นวัน)
-  const today = new Date().toISOString().split('T')[0];
+  // สรุปของวันนี้จะถูกอัปเดตทุกชั่วโมง ส่วนวันก่อนหน้าจะถูกปิดยอดหลัง Sync สำเร็จ
+  const today = getLocalDateString();
   const rows = db.prepare(
     `SELECT * FROM daily_summary
-     WHERE synced_to_sheets = 0 AND date < ?
-     ORDER BY date ASC
-     LIMIT 30`
-  ).all(today);
+     WHERE (synced_to_sheets = 0 AND date <> ?) OR date = ?
+     ORDER BY CASE WHEN date = ? THEN 0 ELSE 1 END, date ASC
+     LIMIT 31`
+  ).all(today, today, today);
 
   if (rows.length === 0) {
     console.log('[Sheets] ✔️ ไม่มีรายการใหม่ที่ต้อง Sync');
     return { synced: 0, errors: 0 };
   }
 
-  const values = rows.map((r) => [
+  const valuesForRow = (r) => [
     r.date,
-    parseFloat((r.peak_kwh     || 0).toFixed(4)),
-    parseFloat((r.off_peak_kwh || 0).toFixed(4)),
-    parseFloat((r.total_kwh    || 0).toFixed(4)),
-    parseFloat((r.peak_cost    || 0).toFixed(2)),
-    parseFloat((r.off_peak_cost|| 0).toFixed(2)),
-    parseFloat((r.total_cost   || 0).toFixed(2)),
+    parseFloat((r.peak_kwh      || 0).toFixed(4)),
+    parseFloat((r.off_peak_kwh  || 0).toFixed(4)),
+    parseFloat((r.total_kwh     || 0).toFixed(4)),
+    parseFloat((r.total_cost    || 0).toFixed(2)),
+    parseFloat((r.max_demand_kw || 0).toFixed(4)),
+    parseFloat((r.demand_rate   || 0).toFixed(4)),
+    parseFloat((r.demand_cost   || 0).toFixed(2)),
+    parseFloat((r.dashboard_cost|| 0).toFixed(2)),
     parseFloat((r.avg_voltage_l1|| 0).toFixed(2)),
     parseFloat((r.avg_voltage_l2|| 0).toFixed(2)),
     parseFloat((r.avg_voltage_l3|| 0).toFixed(2)),
-    parseFloat((r.max_power_w  || 0).toFixed(2)),
+    parseFloat((r.max_power_w   || 0).toFixed(2)),
     r.reading_count || 0,
-    new Date().toISOString(),
-  ]);
+    r.last_updated || new Date().toISOString(),
+  ];
 
   let synced = 0;
   let errors = 0;
 
   try {
-    await sheets.spreadsheets.values.append({
+    const dateColumn = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range:            `${sheetName}!A2`,
-      valueInputOption: 'USER_ENTERED',
-      insertDataOption: 'INSERT_ROWS',
-      resource: { values },
+      range: `${sheetName}!A:A`,
+    });
+    const existingRowByDate = new Map();
+    (dateColumn.data.values || []).forEach((row, index) => {
+      if (index > 0 && row[0]) existingRowByDate.set(row[0], index + 1);
     });
 
-    // อัปเดต Flag synced_to_sheets = 1
-    const syncedIds = rows.map((r) => r.id);
-    const placeholders = syncedIds.map(() => '?').join(',');
-    db.prepare(
-      `UPDATE daily_summary SET synced_to_sheets = 1 WHERE id IN (${placeholders})`
-    ).run(...syncedIds);
+    for (const row of rows) {
+      const existingRowNumber = existingRowByDate.get(row.date);
+      if (existingRowNumber) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `${sheetName}!A${existingRowNumber}:O${existingRowNumber}`,
+          // เก็บวันที่ YYYY-MM-DD เป็นข้อความตามเดิม เพื่อหาแถววันเดิมเจอในรอบถัดไป
+          valueInputOption: 'RAW',
+          resource: { values: [valuesForRow(row)] },
+        });
+      } else {
+        await sheets.spreadsheets.values.append({
+          spreadsheetId,
+          range: `${sheetName}!A2:O`,
+          valueInputOption: 'RAW',
+          insertDataOption: 'INSERT_ROWS',
+          resource: { values: [valuesForRow(row)] },
+        });
+      }
+    }
+
+    // ปิดยอดเฉพาะวันก่อนหน้า; แถวของวันนี้จะถูก update ต่อในรอบ sync หน้า
+    const completedIds = rows.filter((row) => row.date < today).map((row) => row.id);
+    if (completedIds.length) {
+      const placeholders = completedIds.map(() => '?').join(',');
+      db.prepare(
+        `UPDATE daily_summary SET synced_to_sheets = 1 WHERE id IN (${placeholders})`
+      ).run(...completedIds);
+    }
 
     synced = rows.length;
-    console.log(`[Sheets] ✅ Sync สำเร็จ: ${synced} รายการ`);
+    console.log(`[Sheets] ✅ Sync สรุปรายวันสำเร็จ: ${synced} รายการ`);
   } catch (err) {
     errors = 1;
-    console.error('[Sheets] ❌ Append Error:', err.message);
+    console.error('[Sheets] ❌ Daily Summary Sync Error:', err.message);
   }
 
   return { synced, errors };

@@ -116,8 +116,13 @@ db.exec(`
     avg_voltage_l2  REAL,
     avg_voltage_l3  REAL,
     max_power_w     REAL,
+    max_demand_kw   REAL    DEFAULT 0,
+    demand_rate     REAL    DEFAULT 132.93,
+    demand_cost     REAL    DEFAULT 0,
+    dashboard_cost  REAL    DEFAULT 0,
     reading_count   INTEGER DEFAULT 0,
     synced_to_sheets INTEGER DEFAULT 0,  -- 0 = ยังไม่ Sync, 1 = Sync แล้ว
+    last_updated    TEXT,
     created_at      TEXT    DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   );
 
@@ -183,6 +188,11 @@ ensureColumn('monthly_cost', 'max_demand_kw', 'REAL DEFAULT 0');
 ensureColumn('monthly_cost', 'demand_rate', 'REAL DEFAULT 132.93');
 ensureColumn('monthly_cost', 'demand_cost', 'REAL DEFAULT 0');
 ensureColumn('monthly_cost', 'dashboard_cost', 'REAL DEFAULT 0');
+ensureColumn('daily_summary', 'max_demand_kw', 'REAL DEFAULT 0');
+ensureColumn('daily_summary', 'demand_rate', 'REAL DEFAULT 132.93');
+ensureColumn('daily_summary', 'demand_cost', 'REAL DEFAULT 0');
+ensureColumn('daily_summary', 'dashboard_cost', 'REAL DEFAULT 0');
+ensureColumn('daily_summary', 'last_updated', 'TEXT');
 ensureColumn('billing_settings', 'site_latitude', 'REAL');
 ensureColumn('billing_settings', 'site_longitude', 'REAL');
 
