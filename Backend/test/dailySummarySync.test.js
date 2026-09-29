@@ -20,10 +20,17 @@ test('daily sync updates the same dated row without duplicating it', async () =>
     timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit',
   }).formatToParts(new Date()).map((part) => [part.type, part.value]));
   const date = `${today.year}-${today.month}-${today.day}`;
+  const previousDay = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date(Date.now() - 86400000)).map((part) => [part.type, part.value]));
+  const oldDate = `${previousDay.year}-${previousDay.month}-${previousDay.day}`;
   const dailyRow = {
-    id: 1, date, total_kwh: 1.5, total_cost: 5,
+    id: 1, date, synced_to_sheets: 0, total_kwh: 1.5, total_cost: 5,
     max_demand_kw: 2, demand_rate: 132.93, demand_cost: 265.86,
     dashboard_cost: 270.86, reading_count: 1, last_updated: new Date().toISOString(),
+  };
+  const alreadySyncedOldRow = {
+    ...dailyRow, id: 2, date: oldDate, synced_to_sheets: 1,
   };
   const databaseModulePath = require.resolve('../src/database/db');
   const previousDatabaseModule = require.cache[databaseModulePath];
@@ -33,7 +40,8 @@ test('daily sync updates the same dated row without duplicating it', async () =>
     loaded: true,
     exports: {
       prepare: (sql) => ({
-        all: () => sql.includes('FROM daily_summary') ? [dailyRow] : [],
+        all: () => sql.includes('FROM daily_summary')
+          ? [alreadySyncedOldRow, dailyRow] : [],
         run: () => ({}),
         get: () => null,
       }),
@@ -71,18 +79,19 @@ test('daily sync updates the same dated row without duplicating it', async () =>
 
   try {
     const { syncDailySummaryToSheets } = require('../src/services/sheetsService');
-    assert.deepEqual(await syncDailySummaryToSheets(), { synced: 1, errors: 0 });
-    assert.equal(rows.length, 2);
+    assert.deepEqual(await syncDailySummaryToSheets(), { synced: 2, errors: 0 });
+    assert.equal(rows.length, 3);
     assert.equal(rows[1][0], date);
     assert.equal(rows[1][8], 270.86);
+    assert.equal(rows[2][0], oldDate);
 
     dailyRow.total_cost = 7;
     dailyRow.dashboard_cost = 272.86;
     assert.deepEqual(await syncDailySummaryToSheets(), { synced: 1, errors: 0 });
-    assert.equal(rows.length, 2);
+    assert.equal(rows.length, 3);
     assert.equal(rows[1][0], date);
     assert.equal(rows[1][8], 272.86);
-    assert.equal(writes.filter((write) => write.valueInputOption === 'RAW').length, 2);
+    assert.equal(writes.filter((write) => write.valueInputOption === 'RAW').length, 3);
   } finally {
     google.auth.GoogleAuth = originalGoogleAuth;
     google.sheets = originalSheets;

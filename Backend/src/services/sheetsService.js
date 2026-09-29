@@ -178,19 +178,7 @@ async function syncDailySummaryToSheets() {
 
   await ensureDailySheetHeader(sheets);
 
-  // สรุปของวันนี้จะถูกอัปเดตทุกชั่วโมง ส่วนวันก่อนหน้าจะถูกปิดยอดหลัง Sync สำเร็จ
   const today = getLocalDateString();
-  const rows = db.prepare(
-    `SELECT * FROM daily_summary
-     WHERE (synced_to_sheets = 0 AND date <> ?) OR date = ?
-     ORDER BY CASE WHEN date = ? THEN 0 ELSE 1 END, date ASC
-     LIMIT 31`
-  ).all(today, today, today);
-
-  if (rows.length === 0) {
-    console.log('[Sheets] ✔️ ไม่มีรายการใหม่ที่ต้อง Sync');
-    return { synced: 0, errors: 0 };
-  }
 
   const valuesForRow = (r) => [
     r.date,
@@ -222,6 +210,22 @@ async function syncDailySummaryToSheets() {
     (dateColumn.data.values || []).forEach((row, index) => {
       if (index > 0 && row[0]) existingRowByDate.set(row[0], index + 1);
     });
+
+    // แถวเก่าที่เคยซิงก์ไป EnergyData แล้วก็ต้องเติมใน DailySummary ใหม่
+    // ส่วนของวันนี้จะอัปเดตทุกชั่วโมง ไม่สร้างแถวซ้ำ
+    const rows = db.prepare(
+      `SELECT * FROM daily_summary WHERE date <= ? ORDER BY date ASC`
+    ).all(today)
+      .filter((row) => row.date === today || row.synced_to_sheets === 0
+        || !existingRowByDate.has(row.date))
+      .sort((a, b) => a.date === today ? -1 : b.date === today ? 1
+        : a.date.localeCompare(b.date))
+      .slice(0, 31);
+
+    if (rows.length === 0) {
+      console.log('[Sheets] ✔️ ไม่มีรายการใหม่ที่ต้อง Sync');
+      return { synced: 0, errors: 0 };
+    }
 
     for (const row of rows) {
       const existingRowNumber = existingRowByDate.get(row.date);
