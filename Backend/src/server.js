@@ -41,11 +41,13 @@ if (cron.validate(config.googleSheets.syncCron)) {
   cron.schedule(config.googleSheets.syncCron, async () => {
     console.log('[Cron] ⏰ เริ่มต้น Google Sheets Sync Job...');
     try {
+      const hourlyResult = await sheetsService.syncHourlySummaryToSheets();
       const dailyResult = await sheetsService.syncDailySummaryToSheets();
       const monthlyResult = await sheetsService.syncCurrentMonthlyBillingToSheets();
       console.log(
-        `[Cron] Google Sheets Sync: daily=${dailyResult.synced}, ` +
-        `monthly=${monthlyResult.synced}, errors=${dailyResult.errors + monthlyResult.errors}`
+        `[Cron] Google Sheets Sync: hourly=${hourlyResult.synced}, ` +
+        `daily=${dailyResult.synced}, ` +
+        `monthly=${monthlyResult.synced}, errors=${hourlyResult.errors + dailyResult.errors + monthlyResult.errors}`
       );
     } catch (err) {
       console.error('[Cron] ❌ Sheets Sync Error:', err.message);

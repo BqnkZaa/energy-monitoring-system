@@ -2,7 +2,7 @@
  * ============================================================
  *  Google Sheets Integration Service
  *  - เชื่อมต่อด้วย Service Account (JSON Key)
- *  - Append รายวัน ทุกชั่วโมง (Cron-based)
+ *  - ซิงก์สรุปรายชั่วโมง รายวัน และรายเดือน (Cron-based)
  * ============================================================
  *
  *  การตั้งค่า Google Sheets API:
@@ -107,6 +107,34 @@ async function ensureDailySheetHeader(sheets) {
   } catch (err) {
     console.error('[Sheets] ❌ ensureDailySheetHeader Error:', err.message);
   }
+}
+
+/** สร้างหัวตารางสรุปรายชั่วโมง หากยังไม่มี */
+async function ensureHourlySheetHeader(sheets) {
+  const spreadsheetId = config.googleSheets.spreadsheetId;
+  const sheetName = config.googleSheets.hourlySheetName;
+  await ensureSheetExists(sheets, sheetName);
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${sheetName}!A1:A1`,
+  });
+  if (res.data.values?.length) return;
+
+  const headers = [[
+    'Hour (Local)', 'Peak kWh', 'Off-Peak kWh', 'Total kWh',
+    'Energy Cost (฿)', 'Max Demand (kW)', 'Demand Rate (฿/kW)',
+    'Demand Cost (฿, reference)', 'Dashboard Total (฿, reference)',
+    'Avg V L1', 'Avg V L2', 'Avg V L3', 'Max Power (W)',
+    'Readings', 'Updated At',
+  ]];
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${sheetName}!A1:O1`,
+    valueInputOption: 'RAW',
+    resource: { values: headers },
+  });
+  console.log('[Sheets] ✅ สร้าง Header สรุปรายชั่วโมงสำเร็จ');
 }
 
 /** สร้าง Sheet หากยังไม่มีใน Spreadsheet */
@@ -268,6 +296,139 @@ async function syncDailySummaryToSheets() {
 }
 
 /**
+ * ซิงก์ข้อมูลอ่านมิเตอร์ที่รวมตามชั่วโมงไปยัง HourlySummary
+ * Hour หมายถึงเวลาในเขตเวลาของ Backend; Demand Cost เป็นค่าอ้างอิง
+ * จึงไม่ควรนำ Demand Cost ของแต่ละชั่วโมงไปบวกเป็นยอดบิล
+ */
+async function syncHourlySummaryToSheets() {
+  if (!config.googleSheets.spreadsheetId) {
+    return { synced: 0, errors: 0 };
+  }
+
+  const authClient = await getAuthClient();
+  if (!authClient) return { synced: 0, errors: 1 };
+
+  const sheets = google.sheets({ version: 'v4', auth: authClient });
+  const spreadsheetId = config.googleSheets.spreadsheetId;
+  const sheetName = config.googleSheets.hourlySheetName;
+  const timeZone = process.env.TZ || 'Asia/Bangkok';
+  const now = new Date();
+  const localHourParts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(now).map((part) => [part.type, part.value]));
+  const currentHour = `${localHourParts.year}-${localHourParts.month}-${localHourParts.day} ${localHourParts.hour}:00`;
+  const billingSettings = billingSettingsService.getBillingSettings();
+  const demandRate = Number(billingSettings.demandRate || 0);
+
+  const valuesForRow = (row) => {
+    const peakKwh = Number(row.peak_kwh || 0);
+    const offPeakKwh = Number(row.off_peak_kwh || 0);
+    const energyCost = Number(row.energy_cost || 0);
+    const maxDemandKw = Number(row.max_demand_kw || 0);
+    const demandCost = maxDemandKw * demandRate;
+    return [
+      row.hour,
+      parseFloat(peakKwh.toFixed(4)),
+      parseFloat(offPeakKwh.toFixed(4)),
+      parseFloat((peakKwh + offPeakKwh).toFixed(4)),
+      parseFloat(energyCost.toFixed(2)),
+      parseFloat(maxDemandKw.toFixed(4)),
+      parseFloat(demandRate.toFixed(4)),
+      parseFloat(demandCost.toFixed(2)),
+      parseFloat((energyCost + demandCost).toFixed(2)),
+      parseFloat(Number(row.avg_voltage_l1 || 0).toFixed(2)),
+      parseFloat(Number(row.avg_voltage_l2 || 0).toFixed(2)),
+      parseFloat(Number(row.avg_voltage_l3 || 0).toFixed(2)),
+      parseFloat(Number(row.max_power_w || 0).toFixed(2)),
+      Number(row.reading_count || 0),
+      row.last_updated || new Date().toISOString(),
+    ];
+  };
+
+  try {
+    await ensureHourlySheetHeader(sheets);
+
+    // รวมจาก raw readings ที่ยังอยู่ใน retention window; grouping ใช้ timezone
+    // เดียวกับ process ของ Backend เพื่อให้ชั่วโมงตรงกับเวลาท้องถิ่นของลูกค้า
+    const hourlyRows = db.prepare(`
+      SELECT
+        strftime('%Y-%m-%d %H:00', received_at, 'localtime') AS hour,
+        SUM(CASE WHEN tou_period = 'peak' THEN MAX(kwh_delta, 0) ELSE 0 END) AS peak_kwh,
+        SUM(CASE WHEN tou_period = 'off_peak' THEN MAX(kwh_delta, 0) ELSE 0 END) AS off_peak_kwh,
+        SUM(MAX(cost_delta, 0)) AS energy_cost,
+        MAX(MAX(total_w, 0)) / 1000.0 AS max_demand_kw,
+        AVG(CASE WHEN l1_valid = 1 THEN l1_v END) AS avg_voltage_l1,
+        AVG(CASE WHEN l2_valid = 1 THEN l2_v END) AS avg_voltage_l2,
+        AVG(CASE WHEN l3_valid = 1 THEN l3_v END) AS avg_voltage_l3,
+        MAX(total_w) AS max_power_w,
+        COUNT(*) AS reading_count,
+        MAX(received_at) AS last_updated
+      FROM energy_readings
+      WHERE received_at >= datetime('now', '-' || ? || ' days')
+      GROUP BY hour
+      ORDER BY hour ASC
+    `).all(config.retention.rawDataDays);
+
+    // At the top of the hour the preceding hour is complete. Leave the active
+    // hour out so its row is not presented as a finished hourly total.
+    const completedRows = hourlyRows.filter((row) => row.hour && row.hour < currentHour);
+    if (completedRows.length === 0) {
+      console.log('[Sheets] ✔️ ยังไม่มีข้อมูลชั่วโมงที่ปิดรอบแล้ว');
+      return { synced: 0, errors: 0 };
+    }
+
+    const hourColumn = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${sheetName}!A:A`,
+    });
+    const existingRowByHour = new Map();
+    (hourColumn.data.values || []).forEach((row, index) => {
+      if (index > 0 && row[0]) existingRowByHour.set(row[0], index + 1);
+    });
+
+    const rowsToAppend = [];
+    const rowsToUpdate = [];
+    for (const row of completedRows) {
+      const existingRowNumber = existingRowByHour.get(row.hour);
+      if (!existingRowNumber) {
+        rowsToAppend.push(valuesForRow(row));
+      } else if (row.hour === completedRows[completedRows.length - 1].hour) {
+        // อัปเดตชั่วโมงล่าสุดซ้ำเพื่อรองรับข้อมูลที่มาถึงช้าหลังรอบก่อน
+        rowsToUpdate.push({
+          range: `${sheetName}!A${existingRowNumber}:O${existingRowNumber}`,
+          values: [valuesForRow(row)],
+        });
+      }
+    }
+
+    if (rowsToUpdate.length) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        resource: { valueInputOption: 'RAW', data: rowsToUpdate },
+      });
+    }
+    if (rowsToAppend.length) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: `${sheetName}!A2:O`,
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        resource: { values: rowsToAppend },
+      });
+    }
+
+    const synced = rowsToAppend.length + rowsToUpdate.length;
+    console.log(`[Sheets] ✅ Sync สรุปรายชั่วโมงสำเร็จ: ${synced} รายการ`);
+    return { synced, errors: 0 };
+  } catch (err) {
+    console.error('[Sheets] ❌ Hourly Summary Sync Error:', err.message);
+    return { synced: 0, errors: 1 };
+  }
+}
+
+/**
  * Sync ยอดเดือนปัจจุบันไปยัง Sheet แยกต่างหาก
  * คอลัมน์สูตรใน Sheet คำนวณ Ft, ค่าบริการ และ VAT โดยใช้ Dashboard Total
  * = Energy Cost + Demand Cost เป็นฐาน
@@ -348,6 +509,7 @@ async function syncCurrentMonthlyBillingToSheets() {
 }
 
 module.exports = {
+  syncHourlySummaryToSheets,
   syncDailySummaryToSheets,
   syncCurrentMonthlyBillingToSheets,
   getAuthClient,
